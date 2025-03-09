@@ -1,0 +1,52 @@
+networks:
+  frontend-network:
+    driver: bridge
+  backend-network:
+    driver: bridge
+
+services:
+  beckend:
+    image: ${DOCKER_REGISTRY-}beckend
+    build:
+      context: .
+      dockerfile: scrapper/Dockerfile
+    networks:
+      - backend-network
+      - frontend-network
+    depends_on:
+      - neo4j.db
+    environment:
+      - NEO4J_URI=bolt://neo4j.db:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
+    restart: unless-stopped
+
+  neo4j.db:
+    image: neo4j:latest
+    networks:
+      backend-network:
+        aliases:
+          - neo4j.db
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-password}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - ./geo/data:/data
+      - ./geo/logs:/logs
+      - ./geo/import:/var/lib/neo4j/import
+      - ./geo/plugins:/plugins
+    restart: unless-stopped
+
+  # angular-app:
+  #   build: 
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   networks:
+  #     - frontend-network
+  #   ports:
+  #     - "80:80"
+  #   depends_on:
+  #     - beckend
+  #   restart: unless-stopped
