@@ -6,7 +6,7 @@ networks:
 
 services:
   beckend:
-    image: ${DOCKER_REGISTRY-}beckend
+    image: ${DOCKER_REGISTRY-}scrapper
     build:
       context: .
       dockerfile: scrapper/Dockerfile
@@ -14,29 +14,25 @@ services:
       - backend-network
       - frontend-network
     depends_on:
-      - neo4j.db
+      - Pg.db
     environment:
       - NEO4J_URI=bolt://neo4j.db:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
     restart: unless-stopped
 
-  neo4j.db:
-    image: neo4j:latest
+  Pg.db:
+    image: postgres
     networks:
       backend-network:
         aliases:
-          - neo4j.db
+          - Pg.db
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-password}
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - ./geo/data:/data
-      - ./geo/logs:/logs
-      - ./geo/import:/var/lib/neo4j/import
-      - ./geo/plugins:/plugins
+      - POSTGRES_USER=Job
+      - POSTGRES_PASSWORD=HKGUbkiwu13!
+      - POSTGRES_DB=JobsDB
+    ports: 
+    - 5432:5432
     restart: unless-stopped
 
   # angular-app:
@@ -50,3 +46,6 @@ services:
   #   depends_on:
   #     - beckend
   #   restart: unless-stopped
+  
+  
+    

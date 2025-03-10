@@ -7,6 +7,6 @@ namespace scrapper.Services
 {
     public interface IJobParserService
     {
-        Task<List<JobOpeningDto>> ScrapingProjectAsync(string[] url);
+        Task ScrapingProjectAsync(Uri[] url);
     }
 }

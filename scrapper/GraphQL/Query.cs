@@ -3,6 +3,7 @@ using scrapper.Models;
 using Newtonsoft.Json;
 using scrapper.Services;
 using scrapper.Models.Dto;
+using Microsoft.EntityFrameworkCore;
 
 
 namespace scrapper.GraphQL
@@ -10,26 +11,29 @@ namespace scrapper.GraphQL
     public class Query
     {
         private readonly HttpClient _httpClient;
-        private readonly INeo4jService _neo4jService;
         private readonly ILogger<Query> _logger;
         private readonly IConfiguration _configuration;
+        private readonly ApplicationDbContext _dbContext;
 
-        public Query([Service] INeo4jService neo4jService, [Service] HttpClient httpClient, ILogger<Query> logger, IConfiguration configuration)
+        public Query( [Service] HttpClient httpClient, ILogger<Query> logger, IConfiguration configuration, ApplicationDbContext dbContext)
         {
-            _neo4jService = neo4jService;
             _httpClient = httpClient;
             _logger = logger;
             _configuration = configuration;
+            _dbContext = dbContext;
 
         }
 
         public async Task<ICollection<JobOpeningDto>> GetDtosAsync()
         {
-            var dataSer = _configuration.GetSection("Data").Get<ProjectView[]>();
             var result = new List<JobOpeningDto>();
-            var all = new List<ProjectView>();
-            all.AddRange(dataSer);
-            foreach (var project in all)
+            var projectInList = _dbContext.projectView.
+                         Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.skills).
+                         Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.workFormats).
+                         Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.jobOpening).
+                         Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.role).AsEnumerable();
+                        
+            foreach (var project in projectInList)
             {
                 var data = project.ListOpenJobsInProject.Select(openJob =>
                         new JobOpeningDto
@@ -148,7 +152,7 @@ namespace scrapper.GraphQL
                                         website = new Website
                                         {
                                             property = "Web Site",
-                                            value = project.ProjectWebsite
+                                            value = project.ProjectWebsite.AbsoluteUri
                                         },
                                         x = new X
                                         {

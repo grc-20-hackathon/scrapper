@@ -3,6 +3,7 @@ using HtmlAgilityPack;
 using System.Buffers.Text;
 using System.Text;
 using scrapper.Models.Dto;
+using Microsoft.EntityFrameworkCore;
 
 namespace scrapper.Services
 {
@@ -11,34 +12,104 @@ namespace scrapper.Services
         private readonly HttpClient _httpClient;
         private readonly ILogger<JobParserService> _logger;
         private readonly IAIService _claudeService;
-        private readonly INeo4jService _neo4jService;
+        private readonly ApplicationDbContext _dbContext;
         private List<ProjectView> ListError = new List<ProjectView>();
 
-        public JobParserService(HttpClient httpClient, ILogger<JobParserService> logger, IAIService claudeService, INeo4jService neo4jService)
+        public JobParserService(HttpClient httpClient, ILogger<JobParserService> logger, IAIService claudeService, ApplicationDbContext dbContext)
         {
             _httpClient = httpClient;
             _logger = logger;
             // Setting User-Agent to bypass blocks
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
             _claudeService = claudeService;
-            _neo4jService = neo4jService;
+            _dbContext = dbContext;
         }
 
-        public async Task<List<JobOpeningDto>> ScrapingProjectAsync(string[] urls)
+        public async Task ScrapingProjectAsync(Uri[] urls)
         {
-            var projectList = new List<ProjectView>();
             foreach (var url in urls)
             {
-                Dictionary<string, List<OpenJobs>> jobOpen = new Dictionary<string, List<OpenJobs>>();
+                Dictionary<Uri, List<OpenJobs>> jobOpen = new Dictionary<Uri, List<OpenJobs>>();
+
+            
+                SelectorModel? xpach = GetXPach(url);
+                List<Uri> sourceUrl = await GetProjectSourse(url, await GetListProjectUrl(url), xpach);
+      
+                if (url.AbsoluteUri == new Uri("https://cryptojobs.com").AbsoluteUri)
+                {
+                    jobOpen = await GetListOpenJobsInCryptojobs(xpach.OpenJopsXPath, url);
+                    foreach (var jobs in jobOpen.ToList())
+                    {
+                        jobOpen[jobs.Key] = await GetOpenJopDetails(jobs.Value, xpach, url);
+                    }
+                }
+       
+                foreach (var item in sourceUrl)
+                {
+                    ProjectView projectView = new ProjectView()
+                    {
+                        Status = Models.TaskStatus.Pending,
+                        ProjectSourse = item.AbsoluteUri
+                    };
+
+
+                    if (url.AbsoluteUri == new Uri("https://cryptojobs.com").AbsoluteUri && jobOpen.ContainsKey(item))
+                    {
+                        projectView.ListOpenJobsInProject = jobOpen[item];
+                    }
+            
+                    projectView = await GetWebSiteAndName(projectView, xpach, url.AbsoluteUri);
+
+                    ProjectView? projectInList = null;
+              
+                    if (projectView.ProjectWebsite != null || !string.IsNullOrEmpty(projectView.ProjectName))
+                    {
+                        projectInList = _dbContext.projectView.
+                            Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.skills).
+                            Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.workFormats).
+                            Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.jobOpening).
+                            Include(x => x.ListOpenJobsInProject).ThenInclude(x => x.role).AsEnumerable().
+                            FirstOrDefault(x => x.ProjectWebsite?.ToString() == projectView.ProjectWebsite?.ToString() || x.ProjectName == projectView.ProjectName);
+                    }
+
+                    if (projectInList != null)
+                    {
+               
+                        if (projectInList.ProjectWebsite == null)
+                            projectInList.ProjectWebsite = projectView.ProjectWebsite;
+                        if (projectInList.ProjectName == null)
+                            projectInList.ProjectName = projectView.ProjectName;
+
+                        if (projectView.ListOpenJobsInProject != null && projectView.ListOpenJobsInProject.Count() > 0)
+                        {
+                            if (projectInList.ListOpenJobsInProject == null)
+                                projectInList.ListOpenJobsInProject = new List<OpenJobs>();
+                            projectInList.ListOpenJobsInProject.AddRange(projectView.ListOpenJobsInProject);
+                        }                    
+             
+                        projectInList.ProjectSourse = item.AbsoluteUri;
+                        projectInList = await GetProjectDetails(projectInList, xpach, url.AbsoluteUri);
+                        _dbContext.Entry<ProjectView>(projectInList).State = EntityState.Modified;
+
+                    }
+                    else
+                    {
+                        projectView = await GetProjectDetails(projectView, xpach, url.AbsoluteUri);
+                        if (projectView.Status == Models.TaskStatus.Completed)
+                        {
+                            await _dbContext.projectView.AddAsync(projectView);
+                        }
+                        else
+                            ListError.Add(projectView);
+                    }
+                    await _dbContext.SaveChangesAsync();
+                }
+
             }
-            var sss = projectList
-                .Where(x => x.ListOpenJobsInProject?.Count > 0).ToList();
-            var cc = sss?.Select(x => x.ListOpenJobsInProject?.Count()).ToList().Sum();
-            return null;
         }
-        private async Task<Dictionary<string, List<OpenJobs>>> GetListOpenJobsInCryptojobs(string xPach, string baseUrl)
+        private async Task<Dictionary<Uri, List<OpenJobs>>> GetListOpenJobsInCryptojobs(string xPach, Uri baseUrl)
         {
-            Dictionary<string, List<OpenJobs>> UrlDetails = new Dictionary<string, List<OpenJobs>>();
+            Dictionary<Uri, List<OpenJobs>> UrlDetails = new Dictionary<Uri, List<OpenJobs>>();
             try
             {
                 int page = 1;
@@ -64,7 +135,7 @@ namespace scrapper.Services
                                     },
                                     jobSourse = item.FirstOrDefault().FirstOrDefault().GetAttributes().FirstOrDefault(x => x.Name == "href").Value
                                 };
-                                var urlProject = item.Skip(1).Take(1).FirstOrDefault()[1].ChildNodes.FirstOrDefault(x => x.Name == "a").GetAttributes().FirstOrDefault(x => x.Name == "href").Value;
+                                var urlProject = new Uri(item.Skip(1).Take(1).FirstOrDefault()[1].ChildNodes.FirstOrDefault(x => x.Name == "a").GetAttributes().FirstOrDefault(x => x.Name == "href").Value);
                                 if (UrlDetails.ContainsKey(urlProject))
                                 {
                                     UrlDetails[urlProject].Add(model);
@@ -88,12 +159,13 @@ namespace scrapper.Services
                 return null;
             }
         }
-        public SelectorModel? GetXPach(string baseUrl)
+        public SelectorModel? GetXPach(Uri baseUrl)
         {
             var selectorModel = new SelectorModel();
-            switch (baseUrl)
+
+            switch (baseUrl.AbsoluteUri)
             {
-                case "https://cryptojobslist.com":
+                case "https://cryptojobslist.com/":
                     selectorModel.ProjectListUrlXPath = "//*[@id=\"__next\"]/main/section[2]/ul/li[*]/a";
                     selectorModel.ProjctDescriptionXPath = "//*[@id=\"__next\"]/main/div[1]/div[2]/div/div[1]";
                     selectorModel.ProjctNameXPath = "//*[@id=\"__next\"]/main/div[1]/div[1]/h1/text()[1]";
@@ -105,7 +177,7 @@ namespace scrapper.Services
                     selectorModel.OpenJopsPropertyXpach = "//*[@id=\"__next\"]/main/div[3]/div[2]/div";
                     selectorModel.OpenJopsPostedDateXpach = "//*[@id=\"__next\"]/main/div[1]/div[1]/div[2]";
                     return selectorModel;
-                case "https://cryptojobs.com":
+                case "https://cryptojobs.com/":
                     selectorModel.ProjectListUrlXPath = "//*[@id=\"searchForm\"]/section[2]/div/div[*]/div/article/aside[1]/h2/a";
                     selectorModel.ProjctDescriptionXPath = "/html/body/div[1]/div/section[2]/div[1]/div/div[2]/div";
                     selectorModel.ProjctNameXPath = "/html/body/div[1]/div/div[2]/div[1]/div/article/aside[1]/div/h1";
@@ -115,7 +187,7 @@ namespace scrapper.Services
                     selectorModel.OpenJopsOverviewXpach = "/html/body/div[1]/div/section[3]/div/div[2]/div/div[1]";
                     selectorModel.OpenJopsPropertyXpach = "/html/body/div[1]/div/section[2]/div/div[1]/article";
                     return selectorModel;
-                case "https://cryptocurrencyjobs.co":
+                case "https://cryptocurrencyjobs.co/":
                     selectorModel.ProjectListUrlXPath = "/html/body/main/div[4]/div/div/a[*]";
                     selectorModel.ProjctDescriptionXPath = "/html/body/main/section[1]/div[1]/div";
                     selectorModel.ProjctNameXPath = "/html/body/main/div/div/div[1]/h1";
@@ -130,28 +202,28 @@ namespace scrapper.Services
                     return selectorModel;
             }
         }
-        public async Task<string> GetListProjectUrl(string baseUrl)
+        public async Task<string> GetListProjectUrl(Uri baseUrl)
         {
-            switch (baseUrl)
+            switch (baseUrl.AbsoluteUri)
             {
-                case "https://cryptojobslist.com":
-                    return System.IO.Path.Combine(baseUrl, "companies");
-                case "https://cryptojobs.com":
-                    return System.IO.Path.Combine(baseUrl, "companies");
-                case "https://cryptocurrencyjobs.co":
-                    return System.IO.Path.Combine(baseUrl, "startups");
+                case "https://cryptojobslist.com/":
+                    return System.IO.Path.Combine(baseUrl.AbsoluteUri, "companies");
+                case "https://cryptojobs.com/":
+                    return System.IO.Path.Combine(baseUrl.AbsoluteUri, "companies");
+                case "https://cryptocurrencyjobs.co/":
+                    return System.IO.Path.Combine(baseUrl.AbsoluteUri, "startups");
                 default:
                     return "";
             }
             ;
         }
-        public async Task<List<string>> GetProjectSourse(string baseUrl, string link, SelectorModel selectorModel)
+        public async Task<List<Uri>> GetProjectSourse(Uri baseUrl, string link, SelectorModel selectorModel)
         {
             try
             {
-                List<string> UrlDetails = new List<string>();
+                List<Uri> UrlDetails = new List<Uri>();
                 int page = 1;
-                string firstLink = "";
+                Uri firstLink = null;
                 while (true)
                 {
                     var html = await _httpClient.GetStringAsync(link + "?page=" + page);
@@ -162,10 +234,10 @@ namespace scrapper.Services
                         doc.LoadHtml(html);
                         var links = doc.DocumentNode.SelectNodes(selectorModel.ProjectListUrlXPath)?
                             .Select(item => item.GetAttributes().FirstOrDefault(x => x.Name == "href")?.Value)?
-                            .Select(x => ValidateUrl(baseUrl, x))?
+                            .Select(x => ValidateUrl(baseUrl.AbsoluteUri, x))?
                             .ToList();
 
-                        if (links != null && firstLink != links.First())
+                        if (links != null && firstLink?.AbsoluteUri != links.First().AbsoluteUri)
                         {
                             firstLink = links.First();
                             UrlDetails.AddRange(links);
@@ -193,11 +265,15 @@ namespace scrapper.Services
                 doc.LoadHtml(response);
                 if (projectView.ProjectWebsite == null && selectorModel.ProjctWebsiteXPath != null)
                 {
-                    projectView.ProjectWebsite = doc.DocumentNode
+                    string? website = doc.DocumentNode
                             .SelectNodes(selectorModel.ProjctWebsiteXPath)?
                             .Where(x => x?.Name == "a" && (x?.InnerText?.ToLowerInvariant()?.Contains("website")).Value)?
                             .Select(x => x?.GetAttributeValue("href", null))?
-                            .FirstOrDefault()?.Split("?")?.FirstOrDefault();
+                            .FirstOrDefault()?.Split("?")?.FirstOrDefault()?.Trim();
+                    if (string.IsNullOrEmpty(website))
+                        projectView.ProjectWebsite = null;
+                    else
+                        projectView.ProjectWebsite = new Uri(website);
                 }
                 if (projectView.ProjectName == null && selectorModel.ProjctNameXPath != null)
                 {
@@ -240,10 +316,10 @@ namespace scrapper.Services
                 {
                     var links = doc.DocumentNode
                         .SelectNodes(selectorModel.OpenJopsXPath)?
-                        .Select(x => new OpenJobs { jobSourse = ValidateUrl(baseUrl, x?.GetAttributeValue("href", null)), jobOpening = new Models.JobOpening { name = x?.InnerText?.Trim() } })?.ToList();
+                        .Select(x => new OpenJobs { jobSourse = ValidateUrl(baseUrl, x?.GetAttributeValue("href", null))?.AbsoluteUri, jobOpening = new Models.JobOpening { name = x?.InnerText?.Trim() } })?.ToList();
                     if (links != null)
                     {
-                        links = await GetOpenJopDetails(links, selectorModel, baseUrl);
+                        links = await GetOpenJopDetails(links, selectorModel, new Uri(baseUrl));
                         if (projectView.ListOpenJobsInProject == null)
                         {
                             projectView.ListOpenJobsInProject = links;
@@ -273,11 +349,13 @@ namespace scrapper.Services
             }
             return projectView;
         }
-        public async Task<List<OpenJobs>> GetOpenJopDetails(List<OpenJobs> jobOpening, SelectorModel selectorModel, string baseUrl)
+        public async Task<List<OpenJobs>> GetOpenJopDetails(List<OpenJobs> jobOpening, SelectorModel selectorModel, Uri baseUrl)
         {
             List<OpenJobs> jobOpeningNew = new List<OpenJobs>();
             foreach (var item in jobOpening)
             {
+                if (_dbContext.projectView.Include(x => x.ListOpenJobsInProject).Where(x => x.ListOpenJobsInProject.Select(y => y.jobSourse).Contains(item.jobSourse)).Count() > 0)
+                    continue;
                 var doc = new HtmlDocument();
                 var response = await _httpClient.GetStringAsync(item.jobSourse);
                 doc.LoadHtml(response);
@@ -301,16 +379,23 @@ namespace scrapper.Services
                                 .SelectSingleNode(selectorModel.OpenJopsPostedDateXpach)?.InnerHtml?.Trim());
                 }
 
-                var data = item; // await _claudeService.GetData(sb.ToString(), PAGE.DETAILS);
-                data.jobOpening.name = item.jobOpening.name;
-                data.jobSourse = item.jobSourse;
-                jobOpeningNew.Add(data);
+                var data = await _claudeService.GetData(sb.ToString(), PAGE.DETAILS);
+                if (data != null)
+                {
+                    data.jobOpening.name = item.jobOpening.name;
+                    data.jobSourse = item.jobSourse;
+                    jobOpeningNew.Add(data);
+                }
             }
             return jobOpeningNew;
         }
-        private string ValidateUrl(string baseUrl, string newUrl)
+        private Uri? ValidateUrl(string baseUrl, string newUrl)
         {
-            return (newUrl.Contains("http://") || newUrl.Contains("https://")) ? newUrl : baseUrl + newUrl;
+            var url = (newUrl.Contains("http://") || newUrl.Contains("https://")) ? newUrl : baseUrl + newUrl;
+            if (url != null)
+                return new Uri(url);
+            else
+                return null;
         }
     }
 }

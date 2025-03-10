@@ -9,7 +9,7 @@ namespace scrapper.Services
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly ILogger<JobParserBackgroundService> _logger;
-        private readonly List<string> _jobSites = new List<string>();
+        private readonly List<Uri> _jobSites = new List<Uri>();
 
         public JobParserBackgroundService(IConfiguration configuration,
             IServiceScopeFactory serviceScopeFactory,
@@ -18,7 +18,7 @@ namespace scrapper.Services
             _serviceScopeFactory = serviceScopeFactory;
             _logger = logger;
             //TODO Replace with value from the database
-            _jobSites = configuration.GetSection("Site").Get<List<string>>()
+            _jobSites = configuration.GetSection("Site").Get<List<Uri>>()
                 ?? throw new InvalidOperationException("No sites for scraping in the settings");
         }
 
@@ -33,25 +33,14 @@ namespace scrapper.Services
                     using (var scope = _serviceScopeFactory.CreateScope())
                     {
                         var jobParserService = scope.ServiceProvider.GetRequiredService<IJobParserService>();
-                        var neo4jService = scope.ServiceProvider.GetRequiredService<INeo4jService>();
-                        foreach (var url in _jobSites)
+                        try
                         {
-                            try
-                            {
-                                var vacancies = new List<JobOpeningDto>();
-                                await jobParserService.ScrapingProjectAsync(_jobSites.ToArray());
-                                _logger.LogInformation($"Scraped jobs from {url}: {vacancies?.Count}");
-                                // Saving jobs to Neo4j
-                                if (vacancies.Any())
-                                {
-                                    //await neo4jService.SaveDataModelsAsync(vacancies.ToArray());
-                                    _logger.LogInformation($"Saved jobs to Neo4j: {vacancies.Count} for site {url} ");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Error occurred while scraping {url}");
-                            }
+                            await jobParserService.ScrapingProjectAsync(_jobSites.ToArray());
+                            _logger.LogInformation($"Scraped jobs from sites: {string.Join(", ", _jobSites)} completed");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Error occurred while scraping {string.Join(", ", _jobSites)}");
                         }
                     }
                 }
@@ -60,7 +49,7 @@ namespace scrapper.Services
                     _logger.LogError(ex, "Error in job scraping background service");
                 }
 
-                // Waiting 2 hours before the next cycle
+     
                 await Task.Delay(TimeSpan.FromHours(2), stoppingToken);
             }
         }

@@ -7,7 +7,7 @@
         public string ProjectSourse { get; set; }
         public string ProjectName { get; set; }
         public string ProjectDescription { get; set; }
-        public string ProjectWebsite { get; set; }
+        public Uri ProjectWebsite { get; set; }
         public string ProjectX { get; set; }
         public string ProjectAvatar { get; set; }
         public string ProjectCover { get; set; }
@@ -15,6 +15,7 @@
     }
     public class OpenJobs
     {
+        public int? Id { get; set; }
         public string jobSourse { get; set; }
         public JobOpening jobOpening { get; set; }
         public Role role { get; set; }
@@ -28,6 +29,7 @@
     }
     public class JobOpening
     {
+        public int? Id { get; set; }
         public string name { get; set; }
         public string description { get; set; }
         public string jobDescription { get; set; }
@@ -35,17 +37,20 @@
 
     public class Role
     {
+        public int? Id { get; set; }
         public string name { get; set; }
         public string description { get; set; }
     }
     public class Skill
     {
+        public int? Id { get; set; }
         public string name { get; set; }
         public string description { get; set; }
     }
 
     public class WorkFormat
     {
+        public int? Id { get; set; }
         public string name { get; set; }
         public string description { get; set; }
     }
